@@ -28,18 +28,29 @@ export const handler = async (req: Request): Promise<Response> => {
       );
     }
 
-    // Optional: Parse the incoming request body from the client to forward
-    // const clientBody = await req.json();
+    // 3. Parse the incoming request body from the client
+    const clientBody = await req.json();
+    const prompt = clientBody.prompt;
 
-    // 3. Make the secure request to the third-party API
-    const targetUrl = 'https://api.example.com/data';
+    if (!prompt) {
+      return new Response(
+        JSON.stringify({ error: 'Missing prompt in request body.' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 4. Make the secure request to the MiniMax API
+    const targetUrl = 'https://api.minimax.chat/v1/chat/completions';
     const apiResponse = await fetch(targetUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
       },
-      // body: JSON.stringify(clientBody),
+      body: JSON.stringify({
+        model: 'MiniMax-M2.5',
+        messages: [{ role: 'user', content: prompt }]
+      }),
     });
 
     if (!apiResponse.ok) {
@@ -47,9 +58,19 @@ export const handler = async (req: Request): Promise<Response> => {
       throw new Error(`Upstream API error: ${apiResponse.status} ${errorText}`);
     }
 
-    // 4. Return the upstream response back to the client
+    // 5. Parse the upstream response and return just the content
     const data = await apiResponse.json();
-    return new Response(JSON.stringify(data), {
+    const choices = data.choices;
+    if (!choices || choices.length === 0) {
+      throw new Error('MiniMax returned empty choices.');
+    }
+    
+    const content = choices[0].message?.content;
+    if (!content) {
+      throw new Error('MiniMax returned missing content.');
+    }
+
+    return new Response(JSON.stringify({ content }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
