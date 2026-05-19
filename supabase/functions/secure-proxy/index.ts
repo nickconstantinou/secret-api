@@ -48,7 +48,7 @@ export const handler = async (req: Request): Promise<Response> => {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'MiniMax-M2.7',
+        model: 'MiniMax-M2.5',
         messages: [{ role: 'user', content: prompt }]
       }),
     });
