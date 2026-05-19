@@ -2,7 +2,7 @@
  * PURPOSE: Securely proxies requests to a third-party API to keep credentials hidden from the client.
  * INPUTS: Client request (requires a valid Supabase JWT in the Authorization header).
  * OUTPUTS: JSON response from the third-party API.
- * NEIGHBORS: Third-party API (https://api.example.com).
+ * NEIGHBORS: Third-party API (https://api.minimax.io).
  * LOGIC: Validates CORS preflight, reads the API key from the secure environment, makes an authenticated POST request to the third-party, and forwards the response.
  */
 
