@@ -40,7 +40,7 @@ export const handler = async (req: Request): Promise<Response> => {
     }
 
     // 4. Make the secure request to the MiniMax API
-    const targetUrl = 'https://api.minimax.chat/v1/chat/completions';
+    const targetUrl = 'https://api.minimax.io/v1/chat/completions';
     const apiResponse = await fetch(targetUrl, {
       method: 'POST',
       headers: {
@@ -48,7 +48,7 @@ export const handler = async (req: Request): Promise<Response> => {
         'Authorization': `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: 'MiniMax-M2.5',
+        model: 'MiniMax-M2.7',
         messages: [{ role: 'user', content: prompt }]
       }),
     });
