@@ -10,7 +10,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run Edge Function tests
+        run: deno test supabase/functions/ --allow-env --allow-net
+
   deploy:
+    needs: test
     runs-on: ubuntu-latest
 
     env:
