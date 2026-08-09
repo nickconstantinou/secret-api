@@ -1,0 +1,7 @@
+{
+  "name": "secret-api",
+  "private": true,
+  "scripts": {
+    "test:insforge": "node --test insforge/functions/*.test.js"
+  }
+}
