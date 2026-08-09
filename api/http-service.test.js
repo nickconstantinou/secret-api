@@ -2,311 +2,270 @@ const assert = require("node:assert/strict");
 const { once } = require("node:events");
 const { test } = require("node:test");
 
-const { AgyRunnerError } = require("./agy-runner.js");
-const {
-  createApiServer,
-  loadConfig,
-  verifyInsforgeSession,
-} = require("./http-service.js");
+const { ProviderError } = require("./provider.js");
+const { createApiService, loadConfig } = require("./http-service.js");
 
-async function withServer(options, callback) {
-  const server = createApiServer(options);
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  try {
-    await callback(`http://127.0.0.1:${address.port}`);
-  } finally {
-    server.close();
-    await once(server, "close");
-  }
-}
-
-function serviceOptions(overrides = {}) {
-  return {
-    allowedOrigins: ["https://client.example"],
-    authenticate: async () => true,
-    logger: () => {},
-    maxBodyBytes: 1024,
-    maxPromptChars: 100,
-    readiness: () => true,
-    runner: {
+async function withService(overrides, callback) {
+  const logs = [];
+  const provider = overrides.provider || {
+    name: "agy",
+    ready: async () => true,
+    generate: async () => ({
+      content: "provider response",
+      provider: "agy",
       model: "gemini-3.6-flash-low",
-      runDetailed: async () => ({
-        content: "provider response",
-        durationSeconds: 1.5,
-        model: "gemini-3.6-flash-low",
-        usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
-      }),
-    },
-    ...overrides,
+      usage: { inputTokens: 10, outputTokens: 5, cacheReadTokens: 2, totalTokens: 15 },
+      durationMs: 1250,
+    }),
+    shutdown: async () => {},
   };
+  const service = createApiService({
+    authenticate: overrides.authenticate || (() => "horizon-backend"),
+    logger: overrides.logger || ((entry) => logs.push(entry)),
+    maxBodyBytes: overrides.maxBodyBytes || 1024,
+    maxPromptBytes: overrides.maxPromptBytes || 100,
+    maxPromptChars: overrides.maxPromptChars || 100,
+    provider,
+    rateLimiter: overrides.rateLimiter || { consume: () => ({ allowed: true }) },
+  });
+  service.server.listen(0, "127.0.0.1");
+  await once(service.server, "listening");
+  const { port } = service.server.address();
+  try {
+    await callback({ logs, service, url: `http://127.0.0.1:${port}` });
+  } finally {
+    await service.close();
+  }
 }
 
 function post(url, options = {}) {
   return fetch(`${url}/secure-proxy`, {
     method: "POST",
     headers: {
-      Authorization: "Bearer session-token",
+      Authorization: `Bearer horizon-backend.${"a".repeat(43)}`,
       "Content-Type": "application/json",
-      Origin: "https://client.example",
       ...options.headers,
     },
     body: options.body ?? JSON.stringify({ prompt: "hello" }),
   });
 }
 
-test("health and readiness do not authenticate or invoke Agy", async () => {
-  let calls = 0;
-  await withServer(
-    serviceOptions({
-      authenticate: async () => {
-        calls += 1;
-        return true;
-      },
-      runner: {
-        runDetailed: async () => {
-          calls += 1;
-          throw new Error("unexpected");
-        },
-      },
-    }),
-    async (url) => {
-      const health = await fetch(`${url}/health`);
-      assert.equal(health.status, 200);
-      assert.deepEqual(await health.json(), { status: "ok" });
-
-      const ready = await fetch(`${url}/ready`);
-      assert.equal(ready.status, 200);
-      assert.deepEqual(await ready.json(), { status: "ready" });
-      assert.equal(calls, 0);
-    }
-  );
+test("health and readiness do not run inference", async () => {
+  let generated = false;
+  await withService({
+    provider: {
+      name: "agy",
+      ready: async () => true,
+      generate: async () => { generated = true; },
+      shutdown: async () => {},
+    },
+  }, async ({ url }) => {
+    assert.deepEqual(await (await fetch(`${url}/health`)).json(), { status: "ok" });
+    assert.deepEqual(await (await fetch(`${url}/ready`)).json(), { status: "ready" });
+    assert.equal(generated, false);
+  });
 });
 
-test("readiness reports unavailable dependencies", async () => {
-  await withServer(serviceOptions({ readiness: () => false }), async (url) => {
+test("readiness fails closed for unavailable providers", async () => {
+  await withService({
+    provider: {
+      name: "agy",
+      ready: async () => false,
+      shutdown: async () => {},
+    },
+  }, async ({ url }) => {
     const response = await fetch(`${url}/ready`);
     assert.equal(response.status, 503);
     assert.deepEqual(await response.json(), { status: "not_ready" });
   });
 });
 
-test("allows CORS preflight only for configured origins", async () => {
-  await withServer(serviceOptions(), async (url) => {
-    const allowed = await fetch(`${url}/secure-proxy`, {
-      method: "OPTIONS",
-      headers: { Origin: "https://client.example" },
-    });
-    assert.equal(allowed.status, 204);
-    assert.equal(
-      allowed.headers.get("Access-Control-Allow-Origin"),
-      "https://client.example"
-    );
+test("authenticates service keys and never forwards credentials", async () => {
+  const providerCalls = [];
+  const authHeaders = [];
+  await withService({
+    authenticate: (header) => {
+      authHeaders.push(header);
+      return "horizon-backend";
+    },
+    provider: {
+      name: "agy",
+      ready: async () => true,
+      generate: async (request) => {
+        providerCalls.push(request);
+        return { content: "answer", provider: "agy", model: "model", durationMs: 1 };
+      },
+      shutdown: async () => {},
+    },
+  }, async ({ url }) => {
+    const response = await post(url);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { content: "answer" });
+  });
 
-    const denied = await fetch(`${url}/secure-proxy`, {
-      method: "OPTIONS",
-      headers: { Origin: "https://attacker.example" },
-    });
-    assert.equal(denied.status, 403);
+  assert.equal(authHeaders.length, 1);
+  assert.equal(providerCalls.length, 1);
+  assert.deepEqual(Object.keys(providerCalls[0]).sort(), ["prompt", "requestId", "signal"]);
+  assert.doesNotMatch(JSON.stringify(providerCalls), /Bearer|horizon-backend/);
+});
+
+test("returns generic 401 for invalid service keys", async () => {
+  await withService({ authenticate: () => null }, async ({ url }) => {
+    const response = await post(url);
+    assert.equal(response.status, 401);
+    assert.deepEqual(await response.json(), { error: "Unauthorized." });
   });
 });
 
-test("requires a bearer session before reading prompts", async () => {
-  let runnerCalled = false;
-  await withServer(
-    serviceOptions({
-      authenticate: async () => false,
-      runner: {
-        runDetailed: async () => {
-          runnerCalled = true;
-        },
-      },
-    }),
-    async (url) => {
-      const response = await post(url);
-      assert.equal(response.status, 401);
-      assert.deepEqual(await response.json(), { error: "Unauthorized." });
-      assert.equal(runnerCalled, false);
-    }
-  );
-});
-
-test("returns 503 when the authentication service is unavailable", async () => {
-  await withServer(
-    serviceOptions({
-      authenticate: async () => {
-        throw new Error("session service failed");
-      },
-    }),
-    async (url) => {
-      const response = await post(url);
-      assert.equal(response.status, 503);
-      assert.deepEqual(await response.json(), {
-        error: "Authentication service unavailable.",
-      });
-    }
-  );
-});
-
-test("rejects malformed and oversized prompt bodies", async () => {
-  await withServer(serviceOptions(), async (url) => {
+test("validates content type, JSON, prompt characters, and UTF-8 bytes", async () => {
+  await withService({ maxPromptBytes: 5, maxPromptChars: 4 }, async ({ url }) => {
+    const wrongType = await post(url, { headers: { "Content-Type": "text/plain" } });
+    assert.equal(wrongType.status, 415);
     const malformed = await post(url, { body: "{" });
     assert.equal(malformed.status, 400);
-    assert.deepEqual(await malformed.json(), { error: "Invalid JSON body." });
-
-    const missing = await post(url, { body: JSON.stringify({}) });
+    const missing = await post(url, { body: "{}" });
     assert.equal(missing.status, 400);
-    assert.deepEqual(await missing.json(), { error: "Missing prompt." });
-
-    const longPrompt = await post(url, {
-      body: JSON.stringify({ prompt: "x".repeat(101) }),
-    });
-    assert.equal(longPrompt.status, 413);
-    assert.deepEqual(await longPrompt.json(), { error: "Prompt is too large." });
-
-    const largeBody = await post(url, {
-      body: JSON.stringify({ prompt: "x", padding: "y".repeat(1100) }),
-    });
-    assert.equal(largeBody.status, 413);
-    assert.deepEqual(await largeBody.json(), { error: "Request body is too large." });
+    const chars = await post(url, { body: JSON.stringify({ prompt: "abcde" }) });
+    assert.equal(chars.status, 413);
+    const bytes = await post(url, { body: JSON.stringify({ prompt: "€€" }) });
+    assert.equal(bytes.status, 413);
+    const exact = await post(url, { body: JSON.stringify({ prompt: "éé" }) });
+    assert.equal(exact.status, 200);
   });
 });
 
-test("returns content and logs safe request telemetry", async () => {
-  const logs = [];
-  const authHeaders = [];
-  const prompts = [];
-  await withServer(
-    serviceOptions({
-      authenticate: async (authorization) => {
-        authHeaders.push(authorization);
-        return true;
-      },
-      logger: (entry) => logs.push(entry),
-      runner: {
-        model: "gemini-3.6-flash-low",
-        runDetailed: async (prompt) => {
-          prompts.push(prompt);
-          return {
-            content: "safe result",
-            durationSeconds: 1.5,
-            model: "gemini-3.6-flash-low",
-            usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 },
-          };
-        },
-      },
-    }),
-    async (url) => {
-      const response = await post(url, {
-        headers: { "X-Request-ID": "request-123" },
-        body: JSON.stringify({ prompt: "private medical prompt" }),
-      });
-      assert.equal(response.status, 200);
-      assert.deepEqual(await response.json(), { content: "safe result" });
-      assert.equal(response.headers.get("X-Request-ID"), "request-123");
-    }
-  );
-
-  assert.deepEqual(authHeaders, ["Bearer session-token"]);
-  assert.deepEqual(prompts, ["private medical prompt"]);
-  assert.equal(logs.length, 1);
-  assert.equal(logs[0].event, "agy_api_request");
-  assert.equal(logs[0].request_id, "request-123");
-  assert.equal(logs[0].status, 200);
-  assert.equal(logs[0].outcome, "success");
-  assert.equal(logs[0].model, "gemini-3.6-flash-low");
-  assert.equal(logs[0].total_tokens, 15);
-  assert.equal(typeof logs[0].duration_ms, "number");
-  assert.doesNotMatch(JSON.stringify(logs), /private medical prompt/);
-  assert.doesNotMatch(JSON.stringify(logs), /session-token/);
+test("rejects oversized request bodies before provider execution", async () => {
+  let generated = false;
+  await withService({
+    maxBodyBytes: 32,
+    provider: {
+      name: "agy",
+      ready: async () => true,
+      generate: async () => { generated = true; },
+      shutdown: async () => {},
+    },
+  }, async ({ url }) => {
+    const response = await post(url, {
+      body: JSON.stringify({ prompt: "x", padding: "y".repeat(100) }),
+    });
+    assert.equal(response.status, 413);
+    assert.equal(generated, false);
+  });
 });
 
-test("maps queue, timeout, shutdown, and provider errors", async () => {
-  const cases = [
-    ["AGY_QUEUE_FULL", 429, "Service queue is full."],
-    ["AGY_TIMEOUT", 504, "Provider timed out."],
-    ["AGY_SHUTTING_DOWN", 503, "Service is shutting down."],
-    ["AGY_PROCESS_FAILED", 502, "Provider request failed."],
-  ];
+test("rate and provider capacity return 429 with Retry-After", async () => {
+  await withService({
+    rateLimiter: { consume: () => ({ allowed: false, retryAfterSeconds: 7 }) },
+  }, async ({ url }) => {
+    const response = await post(url);
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("Retry-After"), "7");
+  });
 
-  for (const [code, expectedStatus, expectedMessage] of cases) {
-    await withServer(
-      serviceOptions({
-        runner: {
-          runDetailed: async () => {
-            throw new AgyRunnerError(code, "internal detail");
-          },
-        },
-      }),
-      async (url) => {
-        const response = await post(url);
-        assert.equal(response.status, expectedStatus);
-        assert.deepEqual(await response.json(), { error: expectedMessage });
-      }
-    );
+  await withService({
+    provider: {
+      name: "agy",
+      ready: async () => true,
+      generate: async () => { throw new ProviderError("PROVIDER_CAPACITY", "private"); },
+      shutdown: async () => {},
+    },
+  }, async ({ url }) => {
+    const response = await post(url);
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get("Retry-After"), "1");
+  });
+});
+
+test("maps stable provider failures to safe public errors", async () => {
+  const mappings = [
+    ["PROVIDER_INPUT_TOO_LARGE", 413],
+    ["PROVIDER_SHUTTING_DOWN", 503],
+    ["PROVIDER_TIMEOUT", 504],
+    ["PROVIDER_OUTPUT_LIMIT", 502],
+    ["PROVIDER_INVALID_RESPONSE", 502],
+    ["PROVIDER_FAILURE", 502],
+  ];
+  for (const [code, status] of mappings) {
+    await withService({
+      provider: {
+        name: "agy",
+        ready: async () => true,
+        generate: async () => { throw new ProviderError(code, "private detail"); },
+        shutdown: async () => {},
+      },
+    }, async ({ url }) => {
+      const response = await post(url);
+      assert.equal(response.status, status);
+      assert.doesNotMatch(await response.text(), /private detail/);
+    });
   }
 });
 
-test("rejects unsupported methods and unknown routes", async () => {
-  await withServer(serviceOptions(), async (url) => {
-    const method = await fetch(`${url}/secure-proxy`, { method: "GET" });
-    assert.equal(method.status, 405);
-    const missing = await fetch(`${url}/missing`);
-    assert.equal(missing.status, 404);
+test("validates request IDs and emits privacy-safe telemetry", async () => {
+  await withService({}, async ({ logs, url }) => {
+    const response = await post(url, {
+      headers: { "X-Request-ID": "valid-request_123" },
+      body: JSON.stringify({ prompt: "private medical prompt" }),
+    });
+    assert.equal(response.headers.get("X-Request-ID"), "valid-request_123");
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].client_id, "horizon-backend");
+    assert.equal(logs[0].provider, "agy");
+    assert.equal(logs[0].total_tokens, 15);
+    assert.doesNotMatch(JSON.stringify(logs), /private medical prompt|Bearer|a{20}/);
+  });
+
+  await withService({}, async ({ url }) => {
+    const response = await post(url, { headers: { "X-Request-ID": "bad\nvalue" } });
+    assert.notEqual(response.headers.get("X-Request-ID"), "bad\nvalue");
   });
 });
 
-test("validates Insforge sessions with the bearer header", async () => {
-  const calls = [];
-  const authenticated = await verifyInsforgeSession("Bearer abc", {
-    baseUrl: "https://auth.example/",
-    fetchImpl: async (url, options) => {
-      calls.push({ url, options });
-      return new Response(null, { status: 200 });
+test("shutdown rejects new requests and delegates to provider", async () => {
+  let stopped = false;
+  await withService({
+    provider: {
+      name: "agy",
+      ready: async () => true,
+      generate: async () => ({ content: "ok", provider: "agy" }),
+      shutdown: async () => { stopped = true; },
     },
-    timeoutMs: 1000,
+  }, async ({ service, url }) => {
+    await service.beginShutdown();
+    assert.equal(stopped, true);
+    const response = await post(url);
+    assert.equal(response.status, 503);
   });
-
-  assert.equal(authenticated, true);
-  assert.equal(calls[0].url, "https://auth.example/api/auth/sessions/current");
-  assert.equal(calls[0].options.headers.Authorization, "Bearer abc");
-  assert.ok(calls[0].options.signal instanceof AbortSignal);
-  assert.equal(
-    await verifyInsforgeSession("Basic abc", {
-      baseUrl: "https://auth.example",
-      fetchImpl: async () => {
-        throw new Error("unexpected");
-      },
-    }),
-    false
-  );
 });
 
-test("configuration requires local binding and explicit service settings", () => {
+test("supports OPTIONS, rejects other methods, and returns 404", async () => {
+  await withService({}, async ({ url }) => {
+    assert.equal((await fetch(`${url}/secure-proxy`, { method: "OPTIONS" })).status, 204);
+    assert.equal((await fetch(`${url}/secure-proxy`)).status, 405);
+    assert.equal((await fetch(`${url}/missing`)).status, 404);
+  });
+});
+
+test("configuration is provider-neutral and loopback-only", () => {
   const config = loadConfig({
     AGY_CLI_PATH: "/opt/agy/bin/agy",
-    AGY_MAX_QUEUE_SIZE: "3",
+    AGY_MAX_ARGUMENT_BYTES: "120000",
     AGY_MODEL: "gemini-3.6-flash-low",
     AGY_WORK_DIR: "/var/lib/secret-api/agy-work",
-    ALLOWED_ORIGINS: "https://one.example, https://two.example",
     API_HOST: "127.0.0.1",
     API_PORT: "8787",
-    INSFORGE_BASE_URL: "https://auth.example/",
+    CLIENT_KEYS_FILE: "/etc/secret-api/client-keys.json",
+    LLM_PROVIDER: "agy",
+    MAX_ACTIVE_CALLS: "1",
+    MAX_QUEUE_SIZE: "4",
+    RATE_LIMIT_COUNT: "10",
+    RATE_LIMIT_WINDOW_MS: "60000",
   });
-
-  assert.deepEqual(config.allowedOrigins, [
-    "https://one.example",
-    "https://two.example",
-  ]);
   assert.equal(config.host, "127.0.0.1");
-  assert.equal(config.port, 8787);
-  assert.equal(config.runner.maxQueueSize, 3);
-  assert.equal(config.insforgeBaseUrl, "https://auth.example");
-
-  assert.throws(
-    () => loadConfig({ ...process.env, API_HOST: "0.0.0.0" }),
-    /API_HOST must be 127\.0\.0\.1/
-  );
-  assert.throws(() => loadConfig({}), /AGY_WORK_DIR is required/);
+  assert.equal(config.provider.name, "agy");
+  assert.equal(config.provider.agy.maxArgumentBytes, 120000);
+  assert.equal(config.maxActiveCalls, 1);
+  assert.equal(config.maxQueueSize, 4);
+  assert.throws(() => loadConfig({ ...process.env, API_HOST: "0.0.0.0" }), /loopback/);
+  assert.throws(() => loadConfig({}), /CLIENT_KEYS_FILE is required/);
 });

@@ -13,6 +13,7 @@ function successEnvelope(content = "spike-ok") {
     structured_output: { content },
     duration_seconds: 1.25,
     usage: {
+      cache_read_tokens: 40,
       input_tokens: 100,
       output_tokens: 20,
       total_tokens: 120,
@@ -241,6 +242,7 @@ test("returns safe usage details for service telemetry", async () => {
     durationSeconds: 1.25,
     model: "gemini-3.6-flash-low",
     usage: {
+      cacheReadTokens: 40,
       inputTokens: 100,
       outputTokens: 20,
       totalTokens: 120,
@@ -293,4 +295,33 @@ test("shutdown rejects queued and new work while active work completes", async (
 
   stub.calls[0].callback(null, successEnvelope("active-result"), "");
   assert.equal(await active, "active-result");
+});
+
+test("enforces the complete UTF-8 prompt argument before execFile", async () => {
+  const stub = createExecFileStub([successEnvelope(), successEnvelope()]);
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    maxArgumentBytes: 4,
+  });
+
+  assert.equal(await runner.run("abcd"), "spike-ok");
+  assert.equal(await runner.run("éé"), "spike-ok");
+  await assert.rejects(runner.run("abcde"), {
+    name: "AgyRunnerError",
+    code: "AGY_ARGUMENT_TOO_LARGE",
+  });
+  await assert.rejects(runner.run("€€"), {
+    name: "AgyRunnerError",
+    code: "AGY_ARGUMENT_TOO_LARGE",
+  });
+  assert.equal(stub.calls.length, 2);
+});
+
+test("passes cancellation signals to execFile", async () => {
+  const stub = createExecFileStub();
+  const runner = new AgyRunner({ cwd: "/tmp/agy-work", execFile: stub.execFile });
+  const controller = new AbortController();
+  await runner.runDetailed("hello", { signal: controller.signal });
+  assert.equal(stub.calls[0].options.signal, controller.signal);
 });
