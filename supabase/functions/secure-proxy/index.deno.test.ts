@@ -57,9 +57,14 @@ Deno.test("secure-proxy - Returns content from MiniMax on success", async () => 
   });
 
   const fetchStub = stub(globalThis, "fetch", (...args) => {
+    assertEquals(args[0], "https://api.minimax.io/v1/chat/completions");
     const init = args[1] as RequestInit;
     const authHeader = (init?.headers as Record<string, string>)?.["Authorization"];
     assertEquals(authHeader, "Bearer test_key_123");
+    assertEquals(JSON.parse(init.body as string), {
+      model: "MiniMax-M2.5",
+      messages: [{ role: "user", content: "say hello" }],
+    });
 
     return Promise.resolve(new Response(JSON.stringify({
       choices: [{ message: { content: "Hello from MiniMax" } }],
@@ -128,6 +133,34 @@ Deno.test("secure-proxy - Handles empty choices from MiniMax", async () => {
     assertEquals(res.status, 400);
     const body = await res.json();
     assertEquals(body.error, "MiniMax returned empty choices.");
+  } finally {
+    envStub.restore();
+    fetchStub.restore();
+  }
+});
+
+Deno.test("secure-proxy - Handles missing content from MiniMax", async () => {
+  const envStub = stub(Deno.env, "get", (key) => {
+    if (key === "MINIMAX_API_KEY") return "test_key_123";
+    return undefined;
+  });
+
+  const fetchStub = stub(globalThis, "fetch", () => {
+    return Promise.resolve(new Response(JSON.stringify({
+      choices: [{ message: {} }],
+    }), { status: 200 }));
+  });
+
+  try {
+    const req = new Request("http://localhost", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: "test" }),
+    });
+    const res = await handler(req);
+    assertEquals(res.status, 400);
+    const body = await res.json();
+    assertEquals(body.error, "MiniMax returned missing content.");
   } finally {
     envStub.restore();
     fetchStub.restore();

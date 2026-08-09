@@ -1,11 +1,15 @@
 # Secret API
 
-A secure backend proxy pattern implemented using Supabase Edge Functions. This repository acts as a backend proxy for routing third-party API requests securely.
+A secure backend proxy for routing third-party API requests without exposing provider credentials to clients.
 
 ## Overview
-- **Framework:** Supabase Edge Functions
-- **Language:** TypeScript / Deno
-- **Deployed to:** `Marketing` Supabase project (`araqigsimkjsmwhnjesv`)
+- **Supabase deployment:** TypeScript / Deno in `supabase/functions/secure-proxy/`
+- **Insforge deployment:** JavaScript in `insforge/functions/secure-proxy.js`
+- **Client contract:** authenticated `POST {"prompt":"..."}` returns `{"content":"..."}`
+
+The two implementations are independent deployment options. Keep their public request and response contract aligned. Platform authentication remains specific to each deployment.
+
+The current implementations call MiniMax. A future Agy-backed API is a separate deployment type because the Agy CLI requires a host that can execute the local binary. It must preserve the same client contract.
 
 ## Client Apps
 
@@ -24,6 +28,20 @@ Both apps authenticate via `signInAnonymously()` and send `{prompt: "..."}` payl
 > See: https://supabase.com/docs/guides/getting-started/api-keys
 
 ## Development
+
+Run the Insforge contract tests with Node.js 24:
+
+```bash
+npm test
+```
+
+Run the Supabase Edge Function tests with Deno:
+
+```bash
+deno test supabase/functions/ --allow-env --allow-net
+```
+
+### Supabase
 
 Run edge functions locally using the Supabase CLI:
 
