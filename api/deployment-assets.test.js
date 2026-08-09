@@ -43,7 +43,7 @@ test("Caddy example uses placeholders and loopback upstream", () => {
 
 test("operations guide keeps activation manual and reversible", () => {
   const guide = read("docs/VPS-OPERATIONS.md");
-  assert.match(guide, /Do not start or enable the service from CI/i);
+  assert.match(guide, /Do not start or enable the\s+service from CI/i);
   assert.match(guide, /systemctl status caddy/);
   assert.match(guide, /caddy validate/);
   assert.match(guide, /Rollback/);

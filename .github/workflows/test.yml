@@ -5,7 +5,11 @@ on:
     paths:
       - '.github/workflows/deploy.yml'
       - '.github/workflows/test.yml'
+      - 'AGENTS.md'
+      - 'README.md'
       - 'api/**'
+      - 'deploy/**'
+      - 'docs/**'
       - 'insforge/functions/**'
       - 'package.json'
       - 'package-lock.json'
@@ -17,7 +21,11 @@ on:
     paths:
       - '.github/workflows/deploy.yml'
       - '.github/workflows/test.yml'
+      - 'AGENTS.md'
+      - 'README.md'
       - 'api/**'
+      - 'deploy/**'
+      - 'docs/**'
       - 'insforge/functions/**'
       - 'package.json'
       - 'package-lock.json'

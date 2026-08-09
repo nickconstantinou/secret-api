@@ -193,6 +193,21 @@ test("maps CLI timeouts", async () => {
   });
 });
 
+test("maps an AbortSignal timeout to the stable timeout error", async () => {
+  const execFile = (_file, _args, _options, callback) => {
+    const error = new Error("aborted");
+    error.code = "ABORT_ERR";
+    queueMicrotask(() => callback(error, "", ""));
+    return { kill() {} };
+  };
+  const runner = new AgyRunner({ cwd: "/tmp/agy-work", execFile });
+
+  await assert.rejects(runner.runDetailed("hello", { signal: AbortSignal.abort() }), {
+    name: "AgyRunnerError",
+    code: "AGY_TIMEOUT",
+  });
+});
+
 test("maps CLI output limit failures", async () => {
   const execFile = (_file, _args, _options, callback) => {
     const error = new Error("stdout maxBuffer length exceeded");
@@ -201,6 +216,23 @@ test("maps CLI output limit failures", async () => {
     return { kill() {} };
   };
   const runner = new AgyRunner({ cwd: "/tmp/agy-work", execFile });
+
+  await assert.rejects(runner.run("hello"), {
+    name: "AgyRunnerError",
+    code: "AGY_OUTPUT_LIMIT",
+  });
+});
+
+test("enforces the combined stdout and stderr output limit", async () => {
+  const execFile = (_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, successEnvelope(), "diagnostic-output"));
+    return { kill() {} };
+  };
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile,
+    maxOutputBytes: Buffer.byteLength(successEnvelope()) + 4,
+  });
 
   await assert.rejects(runner.run("hello"), {
     name: "AgyRunnerError",

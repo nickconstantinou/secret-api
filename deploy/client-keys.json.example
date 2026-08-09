@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "clients": [
+    {
+      "id": "replace-with-backend-id",
+      "keys": [
+        {
+          "hash": "<sha256-hex-of-random-secret>",
+          "expires_at": "2030-01-01T00:00:00Z"
+        }
+      ]
+    }
+  ]
+}

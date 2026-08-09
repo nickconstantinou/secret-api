@@ -123,6 +123,10 @@ test("validates content type, JSON, prompt characters, and UTF-8 bytes", async (
     assert.equal(wrongType.status, 415);
     const malformed = await post(url, { body: "{" });
     assert.equal(malformed.status, 400);
+    const nullBody = await post(url, { body: "null" });
+    assert.equal(nullBody.status, 400);
+    const arrayBody = await post(url, { body: "[]" });
+    assert.equal(arrayBody.status, 400);
     const missing = await post(url, { body: "{}" });
     assert.equal(missing.status, 400);
     const chars = await post(url, { body: JSON.stringify({ prompt: "abcde" }) });
@@ -216,8 +220,8 @@ test("validates request IDs and emits privacy-safe telemetry", async () => {
   });
 
   await withService({}, async ({ url }) => {
-    const response = await post(url, { headers: { "X-Request-ID": "bad\nvalue" } });
-    assert.notEqual(response.headers.get("X-Request-ID"), "bad\nvalue");
+    const response = await post(url, { headers: { "X-Request-ID": "bad value" } });
+    assert.notEqual(response.headers.get("X-Request-ID"), "bad value");
   });
 });
 
@@ -247,7 +251,7 @@ test("supports OPTIONS, rejects other methods, and returns 404", async () => {
 });
 
 test("configuration is provider-neutral and loopback-only", () => {
-  const config = loadConfig({
+  const validEnv = {
     AGY_CLI_PATH: "/opt/agy/bin/agy",
     AGY_MAX_ARGUMENT_BYTES: "120000",
     AGY_MODEL: "gemini-3.6-flash-low",
@@ -260,12 +264,13 @@ test("configuration is provider-neutral and loopback-only", () => {
     MAX_QUEUE_SIZE: "4",
     RATE_LIMIT_COUNT: "10",
     RATE_LIMIT_WINDOW_MS: "60000",
-  });
+  };
+  const config = loadConfig(validEnv);
   assert.equal(config.host, "127.0.0.1");
   assert.equal(config.provider.name, "agy");
   assert.equal(config.provider.agy.maxArgumentBytes, 120000);
   assert.equal(config.maxActiveCalls, 1);
   assert.equal(config.maxQueueSize, 4);
-  assert.throws(() => loadConfig({ ...process.env, API_HOST: "0.0.0.0" }), /loopback/);
+  assert.throws(() => loadConfig({ ...validEnv, API_HOST: "0.0.0.0" }), /loopback/);
   assert.throws(() => loadConfig({}), /CLIENT_KEYS_FILE is required/);
 });

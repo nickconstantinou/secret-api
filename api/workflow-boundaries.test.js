@@ -38,7 +38,11 @@ test("test workflow covers adapter and existing function changes without deploym
   const requiredPaths = [
     ".github/workflows/deploy.yml",
     ".github/workflows/test.yml",
+    "AGENTS.md",
+    "README.md",
     "api/**",
+    "deploy/**",
+    "docs/**",
     "insforge/functions/**",
     "package.json",
     "package-lock.json",
