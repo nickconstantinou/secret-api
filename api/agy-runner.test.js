@@ -170,6 +170,37 @@ test("maps CLI failures without returning stderr", async () => {
   );
 });
 
+test("maps CLI timeouts", async () => {
+  const execFile = (_file, _args, _options, callback) => {
+    const error = new Error("terminated");
+    error.killed = true;
+    error.signal = "SIGTERM";
+    queueMicrotask(() => callback(error, "", ""));
+    return { kill() {} };
+  };
+  const runner = new AgyRunner({ cwd: "/tmp/agy-work", execFile });
+
+  await assert.rejects(runner.run("hello"), {
+    name: "AgyRunnerError",
+    code: "AGY_TIMEOUT",
+  });
+});
+
+test("maps CLI output limit failures", async () => {
+  const execFile = (_file, _args, _options, callback) => {
+    const error = new Error("stdout maxBuffer length exceeded");
+    error.code = "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+    queueMicrotask(() => callback(error, "", ""));
+    return { kill() {} };
+  };
+  const runner = new AgyRunner({ cwd: "/tmp/agy-work", execFile });
+
+  await assert.rejects(runner.run("hello"), {
+    name: "AgyRunnerError",
+    code: "AGY_OUTPUT_LIMIT",
+  });
+});
+
 test("runs only one Agy process at a time by default", async () => {
   const stub = createExecFileStub([]);
   const runner = new AgyRunner({

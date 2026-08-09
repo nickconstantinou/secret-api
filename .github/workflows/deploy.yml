@@ -39,8 +39,8 @@ jobs:
         with:
           node-version: 24
 
-      - name: Run Insforge Function tests
-        run: npm ci && npm run test:insforge
+      - name: Run Node.js tests
+        run: npm ci && npm test
 
   deploy:
     if: github.event_name != 'pull_request'
