@@ -11,6 +11,13 @@ function successEnvelope(content = "spike-ok") {
   return JSON.stringify({
     status: "SUCCESS",
     structured_output: { content },
+    duration_seconds: 1.25,
+    usage: {
+      cache_read_tokens: 40,
+      input_tokens: 100,
+      output_tokens: 20,
+      total_tokens: 120,
+    },
   });
 }
 
@@ -186,6 +193,21 @@ test("maps CLI timeouts", async () => {
   });
 });
 
+test("maps an AbortSignal timeout to the stable timeout error", async () => {
+  const execFile = (_file, _args, _options, callback) => {
+    const error = new Error("aborted");
+    error.code = "ABORT_ERR";
+    queueMicrotask(() => callback(error, "", ""));
+    return { kill() {} };
+  };
+  const runner = new AgyRunner({ cwd: "/tmp/agy-work", execFile });
+
+  await assert.rejects(runner.runDetailed("hello", { signal: AbortSignal.abort() }), {
+    name: "AgyRunnerError",
+    code: "AGY_TIMEOUT",
+  });
+});
+
 test("maps CLI output limit failures", async () => {
   const execFile = (_file, _args, _options, callback) => {
     const error = new Error("stdout maxBuffer length exceeded");
@@ -194,6 +216,23 @@ test("maps CLI output limit failures", async () => {
     return { kill() {} };
   };
   const runner = new AgyRunner({ cwd: "/tmp/agy-work", execFile });
+
+  await assert.rejects(runner.run("hello"), {
+    name: "AgyRunnerError",
+    code: "AGY_OUTPUT_LIMIT",
+  });
+});
+
+test("enforces the combined stdout and stderr output limit", async () => {
+  const execFile = (_file, _args, _options, callback) => {
+    queueMicrotask(() => callback(null, successEnvelope(), "diagnostic-output"));
+    return { kill() {} };
+  };
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile,
+    maxOutputBytes: Buffer.byteLength(successEnvelope()) + 4,
+  });
 
   await assert.rejects(runner.run("hello"), {
     name: "AgyRunnerError",
@@ -220,4 +259,101 @@ test("runs only one Agy process at a time by default", async () => {
 
   stub.calls[1].callback(null, successEnvelope("second-result"), "");
   assert.equal(await second, "second-result");
+});
+
+test("returns safe usage details for service telemetry", async () => {
+  const stub = createExecFileStub();
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    model: "gemini-3.6-flash-low",
+  });
+
+  assert.deepEqual(await runner.runDetailed("hello"), {
+    content: "spike-ok",
+    durationSeconds: 1.25,
+    model: "gemini-3.6-flash-low",
+    usage: {
+      cacheReadTokens: 40,
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+    },
+  });
+});
+
+test("rejects work when the bounded queue is full", async () => {
+  const stub = createExecFileStub([]);
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    maxQueueSize: 1,
+  });
+
+  const active = runner.run("active");
+  const queued = runner.run("queued");
+  await assert.rejects(runner.run("rejected"), {
+    name: "AgyRunnerError",
+    code: "AGY_QUEUE_FULL",
+  });
+
+  stub.calls[0].callback(null, successEnvelope("active-result"), "");
+  await active;
+  await new Promise((resolve) => setImmediate(resolve));
+  stub.calls[1].callback(null, successEnvelope("queued-result"), "");
+  await queued;
+});
+
+test("shutdown rejects queued and new work while active work completes", async () => {
+  const stub = createExecFileStub([]);
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    maxQueueSize: 2,
+  });
+
+  const active = runner.run("active");
+  const queued = runner.run("queued");
+  runner.shutdown();
+
+  await assert.rejects(queued, {
+    name: "AgyRunnerError",
+    code: "AGY_SHUTTING_DOWN",
+  });
+  await assert.rejects(runner.run("new"), {
+    name: "AgyRunnerError",
+    code: "AGY_SHUTTING_DOWN",
+  });
+
+  stub.calls[0].callback(null, successEnvelope("active-result"), "");
+  assert.equal(await active, "active-result");
+});
+
+test("enforces the complete UTF-8 prompt argument before execFile", async () => {
+  const stub = createExecFileStub([successEnvelope(), successEnvelope()]);
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    maxArgumentBytes: 4,
+  });
+
+  assert.equal(await runner.run("abcd"), "spike-ok");
+  assert.equal(await runner.run("éé"), "spike-ok");
+  await assert.rejects(runner.run("abcde"), {
+    name: "AgyRunnerError",
+    code: "AGY_ARGUMENT_TOO_LARGE",
+  });
+  await assert.rejects(runner.run("€€"), {
+    name: "AgyRunnerError",
+    code: "AGY_ARGUMENT_TOO_LARGE",
+  });
+  assert.equal(stub.calls.length, 2);
+});
+
+test("passes cancellation signals to execFile", async () => {
+  const stub = createExecFileStub();
+  const runner = new AgyRunner({ cwd: "/tmp/agy-work", execFile: stub.execFile });
+  const controller = new AbortController();
+  await runner.runDetailed("hello", { signal: controller.signal });
+  assert.equal(stub.calls[0].options.signal, controller.signal);
 });
