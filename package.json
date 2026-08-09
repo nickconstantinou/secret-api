@@ -2,7 +2,8 @@
   "name": "secret-api",
   "private": true,
   "scripts": {
-    "test": "npm run test:insforge",
+    "test": "npm run test:insforge && npm run test:agy",
+    "test:agy": "node --test api/*.test.js",
     "test:insforge": "node --test insforge/functions/*.test.js"
   }
 }
