@@ -1,10 +1,22 @@
 name: Deploy Edge Functions
 
 on:
+  pull_request:
+    paths:
+      - '.github/workflows/deploy.yml'
+      - 'insforge/functions/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'supabase/functions/**'
+      - 'supabase/config.toml'
   push:
     branches:
       - main
     paths:
+      - '.github/workflows/deploy.yml'
+      - 'insforge/functions/**'
+      - 'package.json'
+      - 'package-lock.json'
       - 'supabase/functions/**'
       - 'supabase/config.toml'
   workflow_dispatch:
@@ -28,9 +40,10 @@ jobs:
           node-version: 24
 
       - name: Run Insforge Function tests
-        run: npm run test:insforge
+        run: npm ci && npm run test:insforge
 
   deploy:
+    if: github.event_name != 'pull_request'
     needs: test
     runs-on: ubuntu-latest
 
