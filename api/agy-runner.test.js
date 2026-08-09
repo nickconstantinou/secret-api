@@ -11,6 +11,12 @@ function successEnvelope(content = "spike-ok") {
   return JSON.stringify({
     status: "SUCCESS",
     structured_output: { content },
+    duration_seconds: 1.25,
+    usage: {
+      input_tokens: 100,
+      output_tokens: 20,
+      total_tokens: 120,
+    },
   });
 }
 
@@ -220,4 +226,71 @@ test("runs only one Agy process at a time by default", async () => {
 
   stub.calls[1].callback(null, successEnvelope("second-result"), "");
   assert.equal(await second, "second-result");
+});
+
+test("returns safe usage details for service telemetry", async () => {
+  const stub = createExecFileStub();
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    model: "gemini-3.6-flash-low",
+  });
+
+  assert.deepEqual(await runner.runDetailed("hello"), {
+    content: "spike-ok",
+    durationSeconds: 1.25,
+    model: "gemini-3.6-flash-low",
+    usage: {
+      inputTokens: 100,
+      outputTokens: 20,
+      totalTokens: 120,
+    },
+  });
+});
+
+test("rejects work when the bounded queue is full", async () => {
+  const stub = createExecFileStub([]);
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    maxQueueSize: 1,
+  });
+
+  const active = runner.run("active");
+  const queued = runner.run("queued");
+  await assert.rejects(runner.run("rejected"), {
+    name: "AgyRunnerError",
+    code: "AGY_QUEUE_FULL",
+  });
+
+  stub.calls[0].callback(null, successEnvelope("active-result"), "");
+  await active;
+  await new Promise((resolve) => setImmediate(resolve));
+  stub.calls[1].callback(null, successEnvelope("queued-result"), "");
+  await queued;
+});
+
+test("shutdown rejects queued and new work while active work completes", async () => {
+  const stub = createExecFileStub([]);
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    maxQueueSize: 2,
+  });
+
+  const active = runner.run("active");
+  const queued = runner.run("queued");
+  runner.shutdown();
+
+  await assert.rejects(queued, {
+    name: "AgyRunnerError",
+    code: "AGY_SHUTTING_DOWN",
+  });
+  await assert.rejects(runner.run("new"), {
+    name: "AgyRunnerError",
+    code: "AGY_SHUTTING_DOWN",
+  });
+
+  stub.calls[0].callback(null, successEnvelope("active-result"), "");
+  assert.equal(await active, "active-result");
 });
