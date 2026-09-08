@@ -128,6 +128,7 @@ class AgyRunner {
       );
     }
     this.model = options.model ?? process.env.AGY_MODEL;
+    this.effort = options.effort ?? process.env.AGY_EFFORT ?? "high";
     this.safeEnv = sanitizedEnvironment(options.baseEnv || process.env);
     this.timeoutMs = options.timeoutMs ?? 300_000;
     this.activeCount = 0;
@@ -241,7 +242,7 @@ class AgyRunner {
     ];
 
     if (this.model) {
-      args.push("--model", this.model);
+      args.push("--model", this.model, "--effort", this.effort);
     }
     args.push("--print-timeout", `${this.timeoutMs}ms`);
 

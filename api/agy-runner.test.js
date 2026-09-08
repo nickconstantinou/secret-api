@@ -74,9 +74,39 @@ test("runs Agy without a shell and returns structured content", async () => {
     "plan",
     "--model",
     "gemini-3.6-flash-low",
+    "--effort",
+    "high",
     "--print-timeout",
     "300000ms",
   ]);
+});
+
+test("omits --effort when no model is configured", async () => {
+  const stub = createExecFileStub();
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+  });
+
+  await runner.run("hello");
+
+  assert.equal(stub.calls[0].args.includes("--effort"), false);
+});
+
+test("honors a configured effort level", async () => {
+  const stub = createExecFileStub();
+  const runner = new AgyRunner({
+    cwd: "/tmp/agy-work",
+    execFile: stub.execFile,
+    model: "gemini-3.8-flash",
+    effort: "medium",
+  });
+
+  await runner.run("hello");
+
+  const call = stub.calls[0];
+  assert.equal(call.args[call.args.indexOf("--model") + 2], "--effort");
+  assert.equal(call.args[call.args.indexOf("--effort") + 1], "medium");
 });
 
 test("keeps prompt text in one argument", async () => {
